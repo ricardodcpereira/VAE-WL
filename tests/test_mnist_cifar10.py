@@ -1,3 +1,10 @@
+"""
+Usage example of the Variational Autoencoder with Weighted Loss (VAE-WL) with the MNIST and
+    CIFAR10 datasets. Several pixels are Missing Completely At Random. The simulated missing
+    rate is 40%. The dataset is scaled to the range [0, 1]. The imputation is evaluated
+    through the Mean Absolute Error.
+"""
+
 import tensorflow.keras.losses
 from sklearn.metrics import mean_absolute_error
 import numpy as np
@@ -9,6 +16,15 @@ _MISSING_RATE = 0.4
 
 
 def _process_data(x_data):
+    """
+    Scales the dataset to the range [0, 1] and removes 40% of the pixels completely at random.
+
+    Args:
+        x_data: Dataset to be processed.
+
+    Returns: Processed dataset with and without missing pixels, and the missing mask.
+
+    """
     if len(x_data.shape) == 3:
         x_data = np.expand_dims(x_data, axis=3)
     x_data = x_data.astype('float32') / 255

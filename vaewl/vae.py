@@ -7,6 +7,24 @@ import numpy as np
 
 @dataclass
 class ConfigVAE:
+    """
+    Data class with the configuration for the Variational Autoencoder architecture.
+    All attributes are self-explanatory. However, there are a few important notes:
+        - The ``validation_split`` value is ignored if validation data is supplied to the ``fit()`` method.
+        - Each value of the ``filters`` list specifies the number of output filters of each convolutional layer.
+            Therefore, for multi-layer architectures, this list would contain two or more values.
+        - Each value of the ``kernels`` list specifies the kernel size of each convolutional layer.
+            Therefore, for multi-layer architectures, this list would contain two or more values.
+        - Each value of the ``neurons`` list specifies the number of neurons in each hidden layer.
+            Therefore, for multi-layer architectures, this list would contain two or more values.
+        - The ``dropout`` rates are optional. However, if they are supplied, an independent rate for each
+            convolutional layer (``dropout_conv``) and dense hidden layer (``dropout_fc``) must be defined.
+        - The ``missing_values_weight`` can be used to assign a higher or lower weight to the missing values
+            on the reconstruction error component of the loss function.
+        - The ``kullback_leibler_weight`` can be used to assign a higher or lower weight to the Kulback-Leibler
+            divergence component of the loss function.
+        - The only mandatory attribute is the input shape.
+    """
     optimizer: Any = "adam"
     loss: Any = tf.keras.losses.mean_squared_error
     metrics: List = field(default_factory=lambda: [])
@@ -29,7 +47,9 @@ class ConfigVAE:
 
 
 class Sampling(layers.Layer):
-
+    """
+    Custom layer which implements the reparameterization trick of the Variational Autoencoder.
+    """
     def call(self, inputs):
         z_mean, z_log_var = inputs
         batch = tf.shape(z_mean)[0]
@@ -40,8 +60,34 @@ class Sampling(layers.Layer):
 
 
 class VariationalAutoEncoder:
+    """
+    Implementation of the Variational Autoencoder.
+
+    Attributes:
+        _config (ConfigVAE): Data class with the configuration for the Variational Autoencoder architecture.
+        _model: Complete Keras model (encoding and decoding), obtained after the fitting process.
+        _encoder: Keras model of the encoding side, obtained after the fitting process.
+        _decoder: Keras model of the decoding side, obtained after the fitting process.
+        _fitted (bool): Boolean flag used to indicate if the ``fit()`` method was already invoked.
+    """
+    def __init__(self, config: ConfigVAE):
+        self._config = config
+        self._model = None
+        self._encoder = None
+        self._decoder = None
+        self._fitted = False
 
     def _create_auto_encoder(self, input_shape):
+        """
+        Creates the Variational Autoencoder Keras models with the architecture details provided in ``_config``.
+
+        Args:
+            input_shape: Input shape of the Variational Autoencoder.
+
+        Returns: Tuple with three Keras models (complete model, encoding and decoding sides) and the layers
+            needed by the custom loss function.
+
+        """
         x = enc_input = tf.keras.Input(shape=input_shape)
         masks = tf.keras.Input(shape=input_shape)
 
@@ -101,6 +147,19 @@ class VariationalAutoEncoder:
         return m_global, m_encoder, m_decoder, (enc_input, enc_output, masks, z_mean, z_log_var)
 
     def _vae_wl_loss(self, y_true, y_pred, masks, z_mean, z_log_var):
+        """
+        Custom loss function of the Variational Autoencoder.
+
+        Args:
+            y_true: Ground truth values.
+            y_pred: Predicted values.
+            masks: Missing values masks.
+            z_mean: Mean being learned by the VAE.
+            z_log_var: Log transform of the variance being learned by the VAE.
+
+        Returns: Loss value.
+
+        """
         bce_loss_mv = self._config.loss(K.flatten(y_true * masks), K.flatten(y_pred * masks))
         bce_loss_ov = self._config.loss(K.flatten(y_true * (masks * -1 + 1)), K.flatten(y_pred * (masks * -1 + 1)))
         bce_loss = bce_loss_ov + self._config.missing_values_weight * bce_loss_mv
@@ -109,6 +168,18 @@ class VariationalAutoEncoder:
         return vae_loss
 
     def fit(self, x_train, x_mask, y_train, x_val=None, x_val_mask=None, y_val=None):
+        """
+        Fits the Variational Autoencoder model.
+
+        Args:
+            x_train: Training data.
+            x_mask: Missing values mask of the training data.
+            y_train: Target data.
+            x_val (optional): Validation training data.
+            x_val_mask (optional): Missing values mask of the validation training data.
+            y_val (optional): Validation target data.
+
+        """
         self._model, self._encoder, self._decoder, loss_params = self._create_auto_encoder(self._config.input_shape)
         m_input, m_output, masks, z_mean, z_log_var = loss_params
         self._model.add_loss(self._vae_wl_loss(m_input, m_output, masks, z_mean, z_log_var))
@@ -129,23 +200,45 @@ class VariationalAutoEncoder:
         self._fitted = True
 
     def encode(self, x, x_mask):
+        """
+        Encodes new data points with the Variational Autoencoder.
+
+        Args:
+            x: Data to be encoded.
+            x_mask: Missing values mask of the data to be encoded.
+
+        Returns: The encoded representation of ``x``.
+
+        """
         if not self._fitted:
             raise RuntimeError("The fit method must be called before encode.")
         return self._encoder.predict([x, x_mask])
 
     def decode(self, x):
+        """
+        Decodes encoded representations with the Variational Autoencoder.
+
+        Args:
+            x: Data to be decoded.
+
+        Returns: The decoded data from the encoded representations supplied in ``x``.
+
+        """
         if not self._fitted:
             raise RuntimeError("The fit method must be called before decode.")
         return self._decoder.predict(x)
 
     def encode_and_decode(self, x, x_mask):
+        """
+        Encodes and decodes new data points with the Variational Autoencoder.
+
+        Args:
+            x: Data to be encoded.
+            x_mask: Missing values mask of the data to be encoded.
+
+        Returns: The decoded data from the new data points supplied in ``x``.
+
+        """
         if not self._fitted:
             raise RuntimeError("The fit method must be called before encode and/or decode.")
         return self._model.predict([x, x_mask])
-
-    def __init__(self, config: ConfigVAE):
-        self._config = config
-        self._model = None
-        self._encoder = None
-        self._decoder = None
-        self._fitted = False

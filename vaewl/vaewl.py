@@ -4,14 +4,38 @@ from . import ConfigVAE, VariationalAutoEncoder
 
 
 class VAEWL(BaseEstimator, TransformerMixin):
-    _PRE_IMPUTATION_CONSTANT = 0.0
+    """
+    Implementation of the Variational Autoencoder with Weighted Loss (VAE-WL), according to the
+    scikit-learn architecture: methods ``fit()``, ``transform()`` and ``fit_transform()``.
 
+    Attributes:
+        _config_vae (ConfigVAE): Data class with the configuration for the Variational Autoencoder architecture.
+        _fitted (bool): Boolean flag used to indicate if the ``fit()`` method was already invoked.
+        _vae_wl_model (VariationalAutoEncoder): Variational Autoencoder model.
+    """
+
+    _PRE_IMPUTATION_CONSTANT = 0.0
+    """
+    Constant value used to pre-impute the missing values (`float`).
+    """
     def __init__(self, config_vae: ConfigVAE):
-        self._fitted = False
         self._config_vae = config_vae
+        self._fitted = False
         self._vae_wl_model = VariationalAutoEncoder(config_vae)
 
     def fit(self, X, y=None, **fit_params):
+        """
+        Fits the Variational Autoencoder model.
+        The missing values are pre-imputed with the ``_PRE_IMPUTATION_CONSTANT`` value.
+
+        Args:
+            X: Data used to train the Variational Autoencoder.
+            y: Not applicable. This parameter only exists to maintain compatibility with the scikit-learn architecture.
+            **fit_params: Can be used to supply an optional validation dataset ``X_val``.
+
+        Returns: Instance of self.
+
+        """
         if not isinstance(X, np.ndarray):
             raise TypeError("'X' must be a NumPy Array.")
 
@@ -35,6 +59,17 @@ class VAEWL(BaseEstimator, TransformerMixin):
         return self
 
     def transform(self, X, y=None):
+        """
+        Performs the imputation of missing values in ``X``.
+        The missing values are pre-imputed with the ``_PRE_IMPUTATION_CONSTANT`` value.
+
+        Args:
+            X: Data to be imputed.
+            y: Not applicable. This parameter only exists to maintain compatibility with the scikit-learn architecture.
+
+        Returns: ``X`` already imputed.
+
+        """
         if not self._fitted:
             raise RuntimeError("The fit method must be called before transform.")
         if not isinstance(X, np.ndarray):
