@@ -10,6 +10,7 @@ from sklearn.metrics import mean_absolute_error
 import numpy as np
 from tensorflow.keras.datasets import mnist, cifar10
 from vaewl import ConfigVAE, VAEWL
+from sklearn.model_selection import train_test_split
 
 _DATASET = "MNIST"  # MNIST or CIFAR10
 _MISSING_RATE = 0.4
@@ -48,31 +49,35 @@ if __name__ == '__main__':
     else:
         raise ValueError("Invalid dataset.")
 
-    (x_train, _), (x_test, _) = source.load_data()
+    (x_train_og, _), (x_test_og, _) = source.load_data()
 
-    x_train, x_train_md, missing_mask_train = _process_data(x_train)
+    x_train_test = np.concatenate((x_train_og, x_test_og), axis=0)
+    x_train_val, x_test = train_test_split(x_train_test, test_size=0.2)
+    x_train, x_val = train_test_split(x_train_val, test_size=0.2)
+
+    x_train, x_train_md, _ = _process_data(x_train)
+    x_val, x_val_md, _ = _process_data(x_val)
     x_test, x_test_md, missing_mask_test = _process_data(x_test)
 
     vae_wl_config = ConfigVAE()
     vae_wl_config.verbose = 1
     vae_wl_config.epochs = 200
-    vae_wl_config.filters = [32, 32]
+    vae_wl_config.filters = [32, 64]
     vae_wl_config.kernels = 3
     vae_wl_config.neurons = [392, 196]
-    vae_wl_config.dropout_fc = [0.2, 0.2]
+    vae_wl_config.dropout = [0.2, 0.2]
     vae_wl_config.latent_dimension = 32
     vae_wl_config.batch_size = 64
     vae_wl_config.activation = "relu"
     vae_wl_config.output_activation = "sigmoid"
-    vae_wl_config.optimizer = "adam"
-    vae_wl_config.loss = tensorflow.keras.losses.mean_squared_error
-    vae_wl_config.input_shape = (x_train.shape[1], x_train.shape[2], x_train.shape[3])
+    vae_wl_config.loss = tensorflow.keras.losses.binary_crossentropy
+    vae_wl_config.input_shape = x_train.shape[1:]
     vae_wl_config.missing_values_weight = 5
     vae_wl_config.kullback_leibler_weight = 0.1
 
     vae_wl_model = VAEWL(vae_wl_config)
     print("[VAE-WL] Training and performing imputation...")
-    vae_wl_model.fit(x_train_md)
+    vae_wl_model.fit(x_train_md, x_train, X_val=x_val_md, y_val=x_val)
 
     x_test_imputed = vae_wl_model.transform(x_test_md)
 

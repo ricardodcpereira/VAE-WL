@@ -1,5 +1,8 @@
 import tensorflow as tf
 from tensorflow.keras import Model, layers, backend as K
+from tensorflow.keras.regularizers import l2
+from tensorflow.keras.callbacks import ReduceLROnPlateau, EarlyStopping
+from tensorflow.keras.optimizers import Adam
 from dataclasses import dataclass, field
 from typing import Any, List, Tuple
 import numpy as np
@@ -25,10 +28,8 @@ class ConfigVAE:
             divergence component of the loss function.
         - The only mandatory attribute is the input shape.
     """
-    optimizer: Any = "adam"
     loss: Any = tf.keras.losses.mean_squared_error
     metrics: List = field(default_factory=lambda: [])
-    callbacks: List = field(default_factory=lambda: [])
     epochs: int = 200
     batch_size: int = 32
     validation_split: float = 0.0
@@ -38,9 +39,14 @@ class ConfigVAE:
     activation: str = "relu"
     output_activation: str = "sigmoid"
     neurons: List[int] = field(default_factory=lambda: [10])
-    dropout_conv: List[float] = None
-    dropout_fc: List[float] = None
+    dropout: List[float] = None
     latent_dimension: int = 1
+    weights_initializer: str = "glorot_normal"
+    l2_lambda: float = 0.01
+    learning_rate: float = 0.001
+    reduce_learning_rate_factor: float = 0.2
+    reduce_learning_rate_patience: int = 10
+    early_stopping_patience: int = 10
     input_shape: Tuple = None
     missing_values_weight: int = 1
     kullback_leibler_weight: int = 1
@@ -50,7 +56,7 @@ class Sampling(layers.Layer):
     """
     Custom layer which implements the reparameterization trick of the Variational Autoencoder.
     """
-    def call(self, inputs):
+    def call(self, inputs, *args, **kwargs):
         z_mean, z_log_var = inputs
         batch = tf.shape(z_mean)[0]
         dim = tf.shape(z_mean)[1]
@@ -93,10 +99,9 @@ class VariationalAutoEncoder:
 
         for i, f in enumerate(self._config.filters):
             k = self._config.kernels[i] if isinstance(self._config.kernels, list) else self._config.kernels
-            x = layers.Conv2D(f, kernel_size=k, padding='same', activation=self._config.activation)(x)
-            x = layers.MaxPool2D(2, strides=2)(x)
-            if self._config.dropout_conv is not None:
-                x = layers.Dropout(rate=self._config.dropout_conv[i])(x)
+            x = layers.Conv2D(f, kernel_size=k, padding='same', strides=2, activation=self._config.activation,
+                              kernel_regularizer=l2(self._config.l2_lambda),
+                              kernel_initializer=self._config.weights_initializer)(x)
 
         shape_before_flat = None
         if len(self._config.filters) > 0:
@@ -104,12 +109,16 @@ class VariationalAutoEncoder:
             x = layers.Flatten()(x)
 
         for i, n in enumerate(self._config.neurons):
-            x = layers.Dense(n, activation=self._config.activation)(x)
-            if self._config.dropout_fc is not None:
-                x = layers.Dropout(rate=self._config.dropout_fc[i])(x)
+            x = layers.Dense(n, activation=self._config.activation,
+                             kernel_regularizer=l2(self._config.l2_lambda),
+                             kernel_initializer=self._config.weights_initializer)(x)
+            if self._config.dropout is not None:
+                x = layers.Dropout(rate=self._config.dropout[i])(x)
 
-        z_mean_layer = layers.Dense(self._config.latent_dimension, name="z_mean")
-        z_log_var_layer = layers.Dense(self._config.latent_dimension, name="z_log_var")
+        z_mean_layer = layers.Dense(self._config.latent_dimension,
+                                    kernel_initializer=self._config.weights_initializer, name="z_mean")
+        z_log_var_layer = layers.Dense(self._config.latent_dimension,
+                                       kernel_initializer=self._config.weights_initializer, name="z_log_var")
         z_mean = z_mean_layer(x)
         z_log_var = z_log_var_layer(x)
         x = [z_mean, z_log_var, Sampling()([z_mean, z_log_var])]
@@ -119,26 +128,35 @@ class VariationalAutoEncoder:
         x = dec_input
 
         for i, n in reversed(list(enumerate(self._config.neurons))):
-            x = layers.Dense(n, activation=self._config.activation)(x)
-            if self._config.dropout_fc is not None:
-                x = layers.Dropout(rate=self._config.dropout_fc[i])(x)
+            x = layers.Dense(n, activation=self._config.activation,
+                             kernel_regularizer=l2(self._config.l2_lambda),
+                             kernel_initializer=self._config.weights_initializer)(x)
+            if self._config.dropout is not None:
+                x = layers.Dropout(rate=self._config.dropout[i])(x)
 
         if len(self._config.filters) > 0:
-            x = layers.Dense(units=np.prod(shape_before_flat), activation=self._config.activation)(x)
+            x = layers.Dense(units=np.prod(shape_before_flat), activation=self._config.activation,
+                             kernel_regularizer=l2(self._config.l2_lambda),
+                             kernel_initializer=self._config.weights_initializer)(x)
             x = layers.Reshape(target_shape=shape_before_flat)(x)
 
             for i, f in reversed(list(enumerate(self._config.filters))):
                 k = self._config.kernels[i] if isinstance(self._config.kernels, list) else self._config.kernels
                 x = layers.Conv2DTranspose(f, kernel_size=k, strides=2, padding='same',
-                                           activation=self._config.activation)(x)
-                if self._config.dropout_conv is not None:
-                    x = layers.Dropout(rate=self._config.dropout_conv[i])(x)
+                                           activation=self._config.activation,
+                                           kernel_regularizer=l2(self._config.l2_lambda),
+                                           kernel_initializer=self._config.weights_initializer)(x)
 
-            x = layers.Conv2DTranspose(filters=list(filter(None, enc_input.get_shape().as_list()))[2], kernel_size=1,
-                                       strides=1, padding='same', activation=self._config.output_activation)(x)
+            x = layers.Conv2DTranspose(filters=list(filter(None, enc_input.get_shape().as_list()))[2],
+                                       kernel_size=self._config.kernels, strides=1, padding='same',
+                                       activation=self._config.output_activation,
+                                       kernel_regularizer=l2(self._config.l2_lambda),
+                                       kernel_initializer=self._config.weights_initializer)(x)
         else:
             x = layers.Dense(units=list(filter(None, enc_input.get_shape().as_list()))[0],
-                             activation=self._config.output_activation)(x)
+                             activation=self._config.output_activation,
+                             kernel_regularizer=l2(self._config.l2_lambda),
+                             kernel_initializer=self._config.weights_initializer)(x)
 
         m_decoder = Model(dec_input, x, name='decoder')
         enc_output = m_decoder(m_encoder([enc_input, masks])[2])
@@ -146,7 +164,7 @@ class VariationalAutoEncoder:
 
         return m_global, m_encoder, m_decoder, (enc_input, enc_output, masks, z_mean, z_log_var)
 
-    def _vae_wl_loss(self, y_true, y_pred, masks, z_mean, z_log_var):
+    def _vae_wl_loss(self, y_true, y_pred, masks, z_mean, z_log_var, width, height):
         """
         Custom loss function of the Variational Autoencoder.
 
@@ -156,12 +174,16 @@ class VariationalAutoEncoder:
             masks: Missing values masks.
             z_mean: Mean being learned by the VAE.
             z_log_var: Log transform of the variance being learned by the VAE.
+            width: Width of the training data.
+            height: Height of the training data.
 
         Returns: Loss value.
 
         """
-        bce_loss_mv = self._config.loss(K.flatten(y_true * masks), K.flatten(y_pred * masks))
-        bce_loss_ov = self._config.loss(K.flatten(y_true * (masks * -1 + 1)), K.flatten(y_pred * (masks * -1 + 1)))
+        bce_loss_mv = self._config.loss(K.flatten(y_true * masks),
+                                        K.flatten(y_pred * masks)) * width * height
+        bce_loss_ov = self._config.loss(K.flatten(y_true * (masks * -1 + 1)),
+                                        K.flatten(y_pred * (masks * -1 + 1))) * width * height
         bce_loss = bce_loss_ov + self._config.missing_values_weight * bce_loss_mv
         kl_loss = - 0.5 * K.sum(1 + z_log_var - K.square(z_mean) - K.exp(z_log_var), axis=-1)
         vae_loss = K.mean(bce_loss + self._config.kullback_leibler_weight * kl_loss)
@@ -182,13 +204,23 @@ class VariationalAutoEncoder:
         """
         self._model, self._encoder, self._decoder, loss_params = self._create_auto_encoder(self._config.input_shape)
         m_input, m_output, masks, z_mean, z_log_var = loss_params
-        self._model.add_loss(self._vae_wl_loss(m_input, m_output, masks, z_mean, z_log_var))
-        self._model.compile(optimizer=self._config.optimizer, loss=None, metrics=self._config.metrics)
+        self._model.add_loss(self._vae_wl_loss(m_input, m_output, masks, z_mean,
+                                               z_log_var, x_train.shape[1], x_train.shape[2]))
+        self._model.compile(optimizer=Adam(self._config.learning_rate), loss=None, metrics=self._config.metrics)
+
+        callbacks = []
+        if self._config.reduce_learning_rate_patience > 0:
+            callbacks.append(ReduceLROnPlateau(monitor='val_loss', factor=self._config.reduce_learning_rate_factor,
+                                               patience=self._config.reduce_learning_rate_patience, min_lr=0))
+
+        if self._config.early_stopping_patience > 0:
+            callbacks.append(EarlyStopping(monitor='val_loss', mode='min', verbose=0,
+                                           patience=self._config.early_stopping_patience))
 
         fit_args = {
             "epochs": self._config.epochs,
             "batch_size": self._config.batch_size,
-            "callbacks": self._config.callbacks,
+            "callbacks": callbacks,
             "validation_split": self._config.validation_split,
             "verbose": self._config.verbose
         }
